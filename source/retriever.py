@@ -15,9 +15,7 @@ model = SentenceTransformer("all-MiniLM-L6-v2")
 with open(os.path.join(output_index_path, doc_mapping_file), "rb") as f:
     id_to_text = pickle.load(f)  
 
-def retrieve_relevant_chunks(query: str, k: int = 2):
-    # Load index
-    index = faiss.read_index(os.path.join(output_index_path,index_file))
+def retrieve_relevant_chunks(query: str,index, k: int = 2):
 
     # Encode query
     query_vec = model.encode([query], convert_to_numpy=True)
