@@ -1,15 +1,18 @@
 from typing import Any, Dict, List
 
-from planner import Planner
-from ingest import ingest as run_ingest
-from retriever import load_index_and_mapping, retrieve_relevant_chunks
+from source.planner import Planner
+from source.ingest import ingest as run_ingest
+from source.retriever import load_index_and_mapping, retrieve_relevant_chunks, get_latest_call_id, get_chunks_for_call
+import re
 from sentence_transformers import SentenceTransformer
-from llm import ask_llm
+from source.llm import ask_llm
 
 TOP_K = 10 # how many chunks to retrieve per query
 global index, mapping, model, last_chunks
 EMB_MODEL = "all-MiniLM-L6-v2"
-
+SUMMARY_PAT = re.compile(r"\b(summar(ise|ize)|recap|overview)\b", re.I)
+LAST_CALL_PAT = re.compile(r"\b(last|latest|yesterday)\b", re.I)
+FULL_CALL_PAT = re.compile(r"\b(full|entire|whole)\b", re.I)
 # runtime state
 index = None
 mapping = None
@@ -33,6 +36,34 @@ def retrieval_probe_fn(question: str) -> int:
     except Exception:
         return 0
 
+def choose_context_for_summary(query, last_chunks, mapping):
+    q = query.lower()
+
+    # 1) "summarize last call" → pick most recent call_id
+    if SUMMARY_PAT.search(q) and LAST_CALL_PAT.search(q):
+        cid = get_latest_call_id(mapping)
+        return get_chunks_for_call(mapping, cid) if cid else last_chunks
+
+    # 2) "summarize full call" (or "summarize this call"):
+    #     use the call of the top-1 retrieved chunk
+    if SUMMARY_PAT.search(q) and FULL_CALL_PAT.search(q):
+        if last_chunks:
+            cid = last_chunks[0].get("call_id")
+            if cid:
+                return get_chunks_for_call(mapping, cid)
+
+    # 3) plain "summarize <call X>" (optional simple parse)
+    m = re.search(r"\bcall\s*(\d+)\b", q)
+    if SUMMARY_PAT.search(q) and m:
+        want = m.group(1)
+        # try to match stem suffix (e.g., "call3" from "3_demo_call")
+        for meta in mapping.values():
+            cid = meta.get("call_id") or ""
+            if cid.endswith(want):
+                return get_chunks_for_call(mapping, cid)
+
+    # default: keep retrieved chunks
+    return last_chunks
 
 def cli():
     global index, mapping, model, last_chunks
@@ -80,13 +111,19 @@ def cli():
                 last_chunks = retrieve_relevant_chunks(q, index, mapping, model, k=k)
 
             if action == "synthesize":
-                answer = ask_llm(q, last_chunks, call_ids)
+                context_chunks = last_chunks
+                if SUMMARY_PAT.search(q):
+                    context_chunks = choose_context_for_summary(q, last_chunks, mapping)
+
+                answer = ask_llm(q, context_chunks, call_ids)
+
                 print(f"\nAI: {answer}\n")
                 if last_chunks:
                     print("Top sources:")
-                    for c in last_chunks:
-                        print(f"  [{c['rank']}] {c['file']} #{c['chunk_id']}  score={c['score']:.3f} text = {c['text']}\n\n")
-                print()
+                    for c in context_chunks:
+                        print(f"  [{c['rank']}] {c['file']} #{c['chunk_id']}  {c.get('chunk_start','--:--')}→{c.get('chunk_end','--:--')}  speakers={','.join(c.get('speakers',[]))}")
+                        print(f"\n{c['text'][:100]}{'...' if len(c['text'])>100 else ''}")
+                print("=======================================================END OF QUERY====================================================================\n")
 
 
 if __name__ == "__main__":

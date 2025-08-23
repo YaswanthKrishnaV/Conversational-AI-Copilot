@@ -1,6 +1,6 @@
 # app/planner.py
 from __future__ import annotations
-from llm import get_azure_openai_client
+from source.llm import get_azure_openai_client
 from pathlib import Path
 import os
 import re
@@ -54,14 +54,14 @@ def llm_route(query: str, sys_message = Path("data/sys_message/planner_identifie
     Falls back to heuristic if OpenAI is unavailable or no API key is set.
     """
 
-    client = get_azure_openai_client()
+    client, model_name = get_azure_openai_client()
 
     with open(sys_message, "r", encoding="utf-8") as f:
         sys_message = f.read()
     
     try:
         resp = client.chat.completions.create(
-            model=os.getenv("OPENAI_MODEL"),
+            model=model_name,
             messages=[{"role": "system", "content": sys_message},
                       {"role": "user", "content": query}],
             temperature=0

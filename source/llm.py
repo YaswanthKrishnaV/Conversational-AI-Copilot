@@ -9,25 +9,20 @@ load_dotenv()
 from typing import List, Dict
 
 def get_azure_openai_client() -> AzureOpenAI:
-    azure_endpoint = os.getenv("OPENAI_ENDPOINT")
-    if azure_endpoint is None:
-        print("Please set the environment variable OPENAI_ENDPOINT")
-        exit(1)
 
-    api_key = os.getenv("OPENAI_API_KEY")
-    
-    # this is needed if you use Kantar's models
-    api_version = os.getenv("OPENAI_API_VERSION")
-    if api_key is None:
-        print("Please set the environment variable AZURE_OPENAI_API_KEY")
-        exit(1)
+    az_key = os.getenv("OPENAI_API_KEY")
+    if az_key:
+        from openai import AzureOpenAI
+        endpoint = os.getenv("OPENAI_ENDPOINT")
+        api_ver = os.getenv("OPENAI_API_VERSION", "2024-05-01-preview")
+        model_name = os.getenv("OPENAI_MODEL")
+        # If any required Azure bits are missing, return None -> fallback
+        if not endpoint or not model_name:
+            return None, None
+        client = AzureOpenAI(api_key=az_key, azure_endpoint=endpoint, api_version=api_ver)
+        return client, model_name
 
-    # Initialize the Azure OpenAI client
-    oai_client = AzureOpenAI(
-        azure_endpoint=azure_endpoint, api_key=api_key, api_version=api_version
-    )
-
-    return oai_client
+    return None, None
 
 def format_context(chunks: List[Dict]) -> str:
     lines = []
@@ -52,20 +47,14 @@ def ask_llm(query, chunks, call_ids, sys_message= Path("data/sys_message/context
         ### Context\n{context}\n\n
         ### Question\n{query}\n\n
         ### Answer:
-    '''
-
-    api_key = os.getenv("OPENAI_API_KEY")
-    if not api_key:
-        
-        return "No API key configured. Would answer using the retrieved context."
-    
+    '''    
 
     try:
          # Initialize the Azure OpenAI client
-        oai_client = get_azure_openai_client()
+        oai_client,model_name = get_azure_openai_client()
 
         resp = oai_client.chat.completions.create(
-            model=os.getenv("OPENAI_MODEL"),
+            model=model_name,
             messages=[
                 {"role": "system", "content": "Answer strictly from the provided context."},
                 {"role": "user", "content": prompt},
