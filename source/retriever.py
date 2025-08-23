@@ -72,6 +72,52 @@ def load_index_and_mapping() -> Tuple[faiss.Index, Dict[int, Dict], SentenceTran
     model = SentenceTransformer(EMB_MODEL)
     return index, mapping, model
 
+def retrieve_topic_chunks(
+    topic_query: str,
+    index: faiss.Index,
+    mapping: dict[int, dict],
+    model,
+    k_max: int = 1000,
+    score_threshold: float = 0.25,
+) -> list[dict]:
+    """
+    Retrieve MANY chunks related to `topic_query` across ALL calls.
+    - Returns all hits above `score_threshold`, up to k_max (capped at index size).
+    - Sorted by (call_date asc, chunk_id asc) for coherent reading.
+    """
+    if index is None or index.ntotal == 0:
+        return []
+
+    # Encode + normalize (cosine)
+    q = model.encode([topic_query], convert_to_numpy=True)
+    q = q / (np.linalg.norm(q, axis=1, keepdims=True) + 1e-12)
+
+    k = min(k_max, index.ntotal)
+    sims, ids = index.search(q.astype(np.float32), k)  # IP on normalized → cosine
+    sims, ids = sims[0], ids[0]
+
+    rows = []
+    for rank, (vec_id, score) in enumerate(zip(ids, sims), start=1):
+        if vec_id < 0:
+            continue
+        if score < score_threshold:
+            continue
+        meta = mapping.get(int(vec_id))
+        if not meta:
+            continue
+        rows.append({
+            "rank": rank,
+            "vector_id": int(vec_id),
+            "score": float(score),
+            **meta,
+        })
+
+    # Stable order for reading: by call_date then chunk_id
+    rows.sort(key=lambda r: (r.get("call_date",""), r.get("chunk_id", 0)))
+    # re-rank after sort (optional)
+    for i, r in enumerate(rows, start=1):
+        r["rank"] = i
+    return rows
 
 def retrieve_relevant_chunks(query: str,
                              index: faiss.Index,

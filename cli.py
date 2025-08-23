@@ -2,7 +2,7 @@ from typing import Any, Dict, List
 from source.llm import ask_llm
 from source.planner import Planner
 from source.ingest import ingest as run_ingest
-from source.retriever import load_index_and_mapping, retrieve_relevant_chunks, get_latest_call_id, get_chunks_for_call
+from source.retriever import load_index_and_mapping, retrieve_relevant_chunks, get_latest_call_id, get_chunks_for_call, retrieve_topic_chunks
 from source.scope_router import scope_route
 
 import re
@@ -70,7 +70,6 @@ def choose_context_for_summary(query, last_chunks, mapping):
 def get_chunks_from_scope(route: Dict[str, Any]) -> List[Dict[str, Any]]:
 
     scope = route.get("scope", "topk_only")
-    print(scope,"___________________________")
 
     # default: topk_only
     chosen_chunks = last_chunks
@@ -81,10 +80,8 @@ def get_chunks_from_scope(route: Dict[str, Any]) -> List[Dict[str, Any]]:
             chosen_chunks = get_chunks_for_call(mapping, cid)
 
     elif scope == "full_call_of_top_hit":
-        print("inside full call of top hit")
         if last_chunks:
             cid = last_chunks[0].get("call_id")
-            print(cid,"___________________________")
             if cid:
                 chosen_chunks = get_chunks_for_call(mapping, cid)
 
@@ -113,6 +110,15 @@ def get_chunks_from_scope(route: Dict[str, Any]) -> List[Dict[str, Any]]:
                 mapping.items(), key=lambda x: (x[1].get("call_date",""), x[1].get("chunk_id",0))
             ), start=1)
         ]
+
+    elif scope == "topic_across_calls":
+        topic = (route.get("topic") or "").strip()
+        topic_query = topic if topic else q  # fallback to full query if LLM didn’t extract
+        chosen_chunks = retrieve_topic_chunks(
+            topic_query, index, mapping, model, k_max=100, score_threshold=0.25
+        )
+        if not chosen_chunks:
+            chosen_chunks = last_chunks
         
 
     return chosen_chunks
