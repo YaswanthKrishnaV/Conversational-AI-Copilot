@@ -1,11 +1,13 @@
 from typing import Any, Dict, List
-
+from source.llm import ask_llm
 from source.planner import Planner
 from source.ingest import ingest as run_ingest
 from source.retriever import load_index_and_mapping, retrieve_relevant_chunks, get_latest_call_id, get_chunks_for_call
+from source.scope_router import scope_route
+
 import re
 from sentence_transformers import SentenceTransformer
-from source.llm import ask_llm
+
 
 TOP_K = 10 # how many chunks to retrieve per query
 global index, mapping, model, last_chunks
@@ -65,6 +67,57 @@ def choose_context_for_summary(query, last_chunks, mapping):
     # default: keep retrieved chunks
     return last_chunks
 
+def get_chunks_from_scope(route: Dict[str, Any]) -> List[Dict[str, Any]]:
+
+    scope = route.get("scope", "topk_only")
+    print(scope,"___________________________")
+
+    # default: topk_only
+    chosen_chunks = last_chunks
+
+    if scope == "last_call":
+        cid = get_latest_call_id(mapping)
+        if cid:
+            chosen_chunks = get_chunks_for_call(mapping, cid)
+
+    elif scope == "full_call_of_top_hit":
+        print("inside full call of top hit")
+        if last_chunks:
+            cid = last_chunks[0].get("call_id")
+            print(cid,"___________________________")
+            if cid:
+                chosen_chunks = get_chunks_for_call(mapping, cid)
+
+    elif scope == "call_by_id":
+        # Expect call_id to be something like "1_demo_call" or just a suffix digit.
+        req = (route.get("call_id") or "").strip()
+        if req:
+            # Exact match
+            for meta in mapping.values():
+                if meta.get("call_id") == req:
+                    chosen_chunks = get_chunks_for_call(mapping, req)
+                    break
+            else:
+                # suffix match (e.g., "3" matches "..._3" or endswith 3)
+                for meta in mapping.values():
+                    cid = meta.get("call_id") or ""
+                    if cid.endswith(req):
+                        chosen_chunks = get_chunks_for_call(mapping, cid)
+                        break
+
+    elif scope == "all_calls":
+        # Concatenate every chunk in call order (be careful with long contexts)
+        chosen_chunks = [
+            {"rank": i, "vector_id": vid, "score": 1.0, **meta}
+            for i, (vid, meta) in enumerate(sorted(
+                mapping.items(), key=lambda x: (x[1].get("call_date",""), x[1].get("chunk_id",0))
+            ), start=1)
+        ]
+        
+
+    return chosen_chunks
+
+
 def cli():
     global index, mapping, model, last_chunks
 
@@ -111,10 +164,12 @@ def cli():
                 last_chunks = retrieve_relevant_chunks(q, index, mapping, model, k=k)
 
             if action == "synthesize":
-                context_chunks = last_chunks
-                if SUMMARY_PAT.search(q):
-                    context_chunks = choose_context_for_summary(q, last_chunks, mapping)
 
+                # 2) ask LLM to pick scope
+                route = scope_route(q)
+                
+                context_chunks = get_chunks_from_scope(route)
+                
                 answer = ask_llm(q, context_chunks, call_ids)
 
                 print(f"\nAI: {answer}\n")

@@ -87,20 +87,29 @@ def retrieve_relevant_chunks(query: str,
 
     results: List[Dict] = []
     rank = 1
+
+    # ids, sims should be 1-D here (flatten if needed)
     for vid, score in zip(ids, sims):
         if vid == -1:
             continue
         meta = mapping.get(int(vid))
         if not meta:
             continue
+
         results.append({
             "rank": rank,
             "vector_id": int(vid),
-            "score": float(score),  # cosine similarity (-1..1); higher is better
-            "file": meta["file"],
-            "chunk_id": meta["chunk_id"],
-            "text": meta["text"],
+            "score": float(score),               # cosine similarity (-1..1); higher is better
+            "file": meta.get("file"),
+            "chunk_id": meta.get("chunk_id"),
+            "text": meta.get("text", ""),
+            "call_id": meta.get("call_id"),
+            "call_date": meta.get("call_date"),  # synthetic YYYY-MM-DD if you used that logic
+            "chunk_start": meta.get("chunk_start"),  # "mm:ss" or None
+            "chunk_end": meta.get("chunk_end"),
+            "speakers": meta.get("speakers", []),
         })
         rank += 1
 
     return results
+
