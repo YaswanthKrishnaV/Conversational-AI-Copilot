@@ -1,96 +1,47 @@
-from typing import Any, Dict, List
+from __future__ import annotations
+import asyncio
+from typing import Dict, Any, List
 
-from planner import Planner
-from ingest import ingest as run_ingest
-from retriever import load_index_and_mapping, retrieve_relevant_chunks
-from llm import ask_llm
+from agentic_framework import Orchestrator
 
-TOP_K = 10 # how many chunks to retrieve per query
+def print_sources(chunks: List[Dict[str, Any]]):
+    if not chunks:
+        return
+    print("Top sources:")
+    for c in chunks:
+        print(f"  [{c.get('rank')}] {c.get('file')} #{c.get('chunk_id')}  score={c.get('score'):.3f} \n\n{c.get('text')}\n")
+    print()
 
-# runtime state
-index = None
-mapping = None
-model = None
-last_chunks: List[Dict[str, Any]] = []
+def main():
+    orch = Orchestrator(top_k=10)
+    print("🤖 Agentic Conversational AI Copilot (type 'exit' to quit)")
 
-
-def reload_index_mapping_model():
-    global index, mapping, model
-    index, mapping, model = load_index_and_mapping()
-    return index, mapping, model
-
-
-def retrieval_probe_fn(question: str) -> int:
-    """
-    Tiny check to see if the KB likely has context.
-    """
-    try:
-        chunks = retrieve_relevant_chunks(question, index, mapping, model, k=1)
-        return len([c for c in chunks if c.get("text")])
-    except Exception:
-        return 0
-
-
-def cli():
-    global index, mapping, model, last_chunks
-
-    # Lazy load KB/index on first question
-    loaded_once = False
-    planner = Planner(top_k=TOP_K)
-
-    if not loaded_once:
-        print("Building Index from transcripts in data/transcripts/ ...")
-        run_ingest(paths=None)
-        reload_index_mapping_model()
-        print("Data Ingested & loaded.")
-        loaded_once = True
-    print("\n\nConversational AI Copilot - Please ask your Query (type 'exit' to quit)")
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
 
     while True:
-        q = input("\n\nUSER: ").strip()
+        q = input("You: ").strip()
         if q.lower() in {"exit", "quit"}:
             break
 
-        if not loaded_once:
-            run_ingest(paths=None)
-            reload_index_mapping_model()
-            print("✅ Ingested & loaded.")
-            loaded_once = True
+        result = loop.run_until_complete(orch.handle(q))
+        rtype = result.get("type")
 
-        # PLAN → ACTIONS
-        plan = planner.plan(q, retrieval_probe=retrieval_probe_fn)
-
-        # Single-action outcomes
-        single = plan[0]
-        if len(plan) == 1 and single["action"] in {"block", "irrelevant", "cannot_ingest", "cannot_answer"}:
-            print(f"AI Bot: {single['action'].replace('_',' ')} — {single['reason']}")
+        if rtype == "ingest_ok":
+            print(f"AI: {result['message']}\n")
             continue
 
-        # Execute plan
-        for step in plan:
-            action = step["action"]
+        if rtype == "answer":
+            print(f"\nAI: {result['answer']}\n")
+            print_sources(result.get("chunks", []))
+            continue
 
-            if action == "ingest":
-                paths = step["args"]["paths"]
-                print(f"📥 Ingesting {len(paths)} file(s): {paths}")
-                run_ingest(paths=paths)        # builds+saves fresh index & mapping
-                reload_index_mapping_model()   # reload in-memory handles
-                print("✅ Ingestion complete & index reloaded.\n")
-                break  # end this turn after ingest
+        if rtype == "irrelevant":
+            print(f"AI: {result['message']}\n")
+            continue
 
-            if action == "retrieve":
-                k = int(step["args"]["top_k"])
-                last_chunks = retrieve_relevant_chunks(q, index, mapping, model, k=k)
-
-            if action == "synthesize":
-                answer = ask_llm(q, last_chunks)
-                print(f"\nAI: {answer}\n")
-                if last_chunks:
-                    print("Top sources:")
-                    for c in last_chunks:
-                        print(f"  [{c['rank']}] {c['file']} #{c['chunk_id']}  score={c['score']:.3f} text = {c['text']}\n\n")
-                print()
-
+        # errors / fallbacks
+        print(f"AI: {result.get('message','Sorry, something went wrong.')}\n")
 
 if __name__ == "__main__":
-    cli()
+    main()
