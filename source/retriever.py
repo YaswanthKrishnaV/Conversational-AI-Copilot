@@ -1,40 +1,62 @@
-import faiss
+# app/retriever.py
+from __future__ import annotations
+
 import os
-import numpy as np
 import pickle
+from typing import List, Dict, Tuple
+
+import faiss
+import numpy as np
 from sentence_transformers import SentenceTransformer
 
-input_data_path = "data/transcripts/"
-index_file = "vector_ts.index"
-doc_mapping_file = "docs_mapping_ts.pkl"
-output_index_path = "data/index/"
+INDEX_PATH = "data/index/vector.index"
+MAPPING_PATH = "data/index/docs_mapping.pkl"
+EMB_MODEL = "all-MiniLM-L6-v2"
 
-model = SentenceTransformer("all-MiniLM-L6-v2")
 
-# Load the mapping once (instead of inside the function every time)
-with open(os.path.join(output_index_path, doc_mapping_file), "rb") as f:
-    id_to_metadata = pickle.load(f)  
+def _normalize_rows(x: np.ndarray) -> np.ndarray:
+    norms = np.linalg.norm(x, axis=1, keepdims=True) + 1e-12
+    return x / norms
 
-def retrieve_relevant_chunks(query: str,index, k: int = 3):
 
-    # Encode query
-    query_vec = model.encode([query], convert_to_numpy=True)
+def load_index_and_mapping() -> Tuple[faiss.Index, Dict[int, Dict], SentenceTransformer]:
+    if not (os.path.exists(INDEX_PATH) and os.path.exists(MAPPING_PATH)):
+        raise FileNotFoundError("Index or mapping not found; run ingestion first.")
+    index = faiss.read_index(INDEX_PATH)
+    with open(MAPPING_PATH, "rb") as f:
+        mapping: Dict[int, Dict] = pickle.load(f)
+    model = SentenceTransformer(EMB_MODEL)
+    return index, mapping, model
 
-    # Search
-    distances, ids = index.search(query_vec, k)
 
-    # Collect results (id + file + chunk_id + text + score)
-    results = []
-    for i, doc_id in enumerate(ids[0]):
-        metadata = id_to_metadata.get(int(doc_id), None)
+def retrieve_relevant_chunks(query: str,
+                             index: faiss.Index,
+                             mapping: Dict[int, Dict],
+                             model: SentenceTransformer,
+                             k: int = 4) -> List[Dict]:
+    q_vec = model.encode([query], convert_to_numpy=True)
+    q_vec = _normalize_rows(q_vec).astype(np.float32)  # cosine via IP
 
-        if metadata:
-            results.append({
-                "id": int(doc_id),
-                "file": metadata["file"],
-                "chunk_id": metadata["chunk_id"],
-                "text": metadata["chunk"],
-                "score": float(distances[0][i])
-            })
+    sims, ids = index.search(q_vec, k)
+    sims = sims[0].tolist()
+    ids = ids[0].tolist()
+
+    results: List[Dict] = []
+    rank = 1
+    for vid, score in zip(ids, sims):
+        if vid == -1:
+            continue
+        meta = mapping.get(int(vid))
+        if not meta:
+            continue
+        results.append({
+            "rank": rank,
+            "vector_id": int(vid),
+            "score": float(score),  # cosine similarity (-1..1); higher is better
+            "file": meta["file"],
+            "chunk_id": meta["chunk_id"],
+            "text": meta["text"],
+        })
+        rank += 1
 
     return results

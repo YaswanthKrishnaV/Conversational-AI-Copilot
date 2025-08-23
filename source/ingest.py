@@ -1,69 +1,78 @@
+# app/ingest.py
+from __future__ import annotations
+
 import os
-import faiss
 import pickle
+from pathlib import Path
+from typing import List, Tuple, Dict
+
+import faiss
 import numpy as np
 from sentence_transformers import SentenceTransformer
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 
+# paths
+INPUT_DIR = Path("data/transcripts")
+OUTPUT_DIR = Path("data/index")
+OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+INDEX_PATH = OUTPUT_DIR / "vector.index"
+MAPPING_PATH = OUTPUT_DIR / "docs_mapping.pkl"
 
-model = SentenceTransformer("all-MiniLM-L6-v2") ##TBM
-
-input_data_path = "data/transcripts/"
-index_file = "vector_ts.index"
-doc_mapping_file = "docs_mapping_ts.pkl"
-output_index_path = "data/index/"
-
-def ingest():
-    texts = []          # store chunks
-    meta_mapping = []   # store metadata (chunk, file, chunk_id)
-
-    splitter = RecursiveCharacterTextSplitter(
-        chunk_size=500,
-        chunk_overlap=50
-    )
+# model + chunking
+EMB_MODEL = "all-MiniLM-L6-v2"
+CHUNK_SIZE = 750
+CHUNK_OVERLAP = 50
 
 
-    # Process each file
-    for file in os.listdir(input_data_path):
-        if file.endswith(".txt"):
-            with open(os.path.join(input_data_path, file), "r", encoding="utf-8") as f:
-                text = f.read()
-            
-            # Split into chunks
-            chunks = splitter.split_text(text)
+def _normalize_rows(x: np.ndarray) -> np.ndarray:
+    norms = np.linalg.norm(x, axis=1, keepdims=True) + 1e-12
+    return x / norms
 
-            for i, chunk in enumerate(chunks):
-                texts.append(chunk)
-                meta_mapping.append({
-                    "file": file,
-                    "chunk_id": i,
-                    "chunk": chunk
-                })
-    
+
+def ingest(paths: List[str] | None = None) -> Tuple[faiss.Index, Dict[int, Dict]]:
+    """
+    Build a fresh FAISS index (cosine similarity using IP on normalized vectors)
+    with chunked transcripts. Saves:
+      - FAISS index to data/index/vector.index
+      - mapping dict {faiss_id: {file, chunk_id, text}} to data/index/docs_mapping.pkl
+    If `paths` is None, ingests all *.txt in data/transcripts.
+    """
+    files: List[Path] = []
+    if paths:
+        files = [Path(p) for p in paths]
+    else:
+        files = sorted([p for p in INPUT_DIR.glob("*.txt")])
+
+    splitter = RecursiveCharacterTextSplitter(chunk_size=CHUNK_SIZE, chunk_overlap=CHUNK_OVERLAP)
+    texts: List[str] = []
+    meta: List[Dict] = []
+
+    for fp in files:
+        if not fp.exists() or not fp.is_file():
+            continue
+        text = fp.read_text(encoding="utf-8", errors="ignore")
+        chunks = splitter.split_text(text)
+        for i, ch in enumerate(chunks):
+            if ch.strip():
+                texts.append(ch.strip())
+                meta.append({"file": fp.name, "chunk_id": i, "text": ch.strip()})
+
     if not texts:
-        raise ValueError("No text files found for ingestion!")
-    # print(f"✅ Ingested {len(texts)} chunks from {len(os.listdir(input_data_path))} files.")
+        raise ValueError("No chunks produced. Ensure there are .txt files with content.")
 
-    # Encode all chunks
-    embeddings = model.encode(texts, convert_to_numpy=True, show_progress_bar=True)
+    # Embed + normalize (cosine)
+    model = SentenceTransformer(EMB_MODEL)
+    emb = model.encode(texts, convert_to_numpy=True, show_progress_bar=True)
+    emb = _normalize_rows(emb).astype(np.float32)
 
-    # Create FAISS index
-    index = faiss.IndexFlatL2(embeddings.shape[1])
-    index.add(embeddings)
+    index = faiss.IndexFlatIP(emb.shape[1])  # cosine via inner product on unit vectors
+    index.add(emb)
 
-    # Ensure output directory exists
-    os.makedirs(output_index_path, exist_ok=True)
+    # Persist
+    faiss.write_index(index, str(INDEX_PATH))
+    id_to_meta = {i: meta[i] for i in range(len(meta))}
+    with open(MAPPING_PATH, "wb") as f:
+        pickle.dump(id_to_meta, f)
 
-    # Save FAISS index
-    faiss.write_index(index, os.path.join(output_index_path, index_file))
-
-    # Save mapping: {faiss_id: metadata}
-    id_to_metadata = {i: meta_mapping[i] for i in range(len(meta_mapping))}
-    with open(os.path.join(output_index_path, doc_mapping_file), "wb") as f:
-        pickle.dump(id_to_metadata, f)
-
-    print("Ingestion complete: index + mapping saved!")
-    return index
-
-if __name__ == "__main__":
-    index = ingest()
+    print(f"✅ Ingestion: {len(texts)} chunks → {INDEX_PATH.name}, {MAPPING_PATH.name}")
+    return index, id_to_meta
