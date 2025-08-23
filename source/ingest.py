@@ -73,6 +73,8 @@ def ingest(paths: List[str] | None = None) -> Tuple[faiss.Index, Dict[int, Dict]
     id_to_meta = {i: meta[i] for i in range(len(meta))}
     with open(MAPPING_PATH, "wb") as f:
         pickle.dump(id_to_meta, f)
-
+    call_ids = [file.stem for file in files]
+    
     print(f"✅ Ingestion: {len(texts)} chunks → {INDEX_PATH.name}, {MAPPING_PATH.name}")
-    return index, id_to_meta
+    
+    return index, id_to_meta, call_ids

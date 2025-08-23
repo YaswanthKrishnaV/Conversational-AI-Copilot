@@ -38,15 +38,17 @@ def format_context(chunks: List[Dict]) -> str:
         lines.append("")  # blank
     return "\n".join(lines)
 
-def ask_llm(query, chunks, sys_message= Path("data/sys_message/context_query_prompt.txt")) -> str:
+def ask_llm(query, chunks, call_ids, sys_message= Path("data/sys_message/context_query_prompt.txt")) -> str:
 
     context = format_context(chunks)
 
     with open(sys_message, "r", encoding="utf-8") as f:
         sys_message = f.read()
-        
+
     prompt =f'''
        {sys_message}
+       The files consist of transcripts from calls with the following IDs: {', '.join(call_ids)}.
+
         ### Context\n{context}\n\n
         ### Question\n{query}\n\n
         ### Answer:

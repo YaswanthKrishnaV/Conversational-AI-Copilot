@@ -3,9 +3,12 @@ from typing import Any, Dict, List
 from planner import Planner
 from ingest import ingest as run_ingest
 from retriever import load_index_and_mapping, retrieve_relevant_chunks
+from sentence_transformers import SentenceTransformer
 from llm import ask_llm
 
 TOP_K = 10 # how many chunks to retrieve per query
+global index, mapping, model, last_chunks
+EMB_MODEL = "all-MiniLM-L6-v2"
 
 # runtime state
 index = None
@@ -15,7 +18,7 @@ last_chunks: List[Dict[str, Any]] = []
 
 
 def reload_index_mapping_model():
-    global index, mapping, model
+    
     index, mapping, model = load_index_and_mapping()
     return index, mapping, model
 
@@ -40,8 +43,8 @@ def cli():
 
     if not loaded_once:
         print("Building Index from transcripts in data/transcripts/ ...")
-        run_ingest(paths=None)
-        reload_index_mapping_model()
+        index, mapping, call_ids = run_ingest(paths=None)
+        model = SentenceTransformer(EMB_MODEL)
         print("Data Ingested & loaded.")
         loaded_once = True
     print("\n\nConversational AI Copilot - Please ask your Query (type 'exit' to quit)")
@@ -50,12 +53,6 @@ def cli():
         q = input("\n\nUSER: ").strip()
         if q.lower() in {"exit", "quit"}:
             break
-
-        if not loaded_once:
-            run_ingest(paths=None)
-            reload_index_mapping_model()
-            print("✅ Ingested & loaded.")
-            loaded_once = True
 
         # PLAN → ACTIONS
         plan = planner.plan(q, retrieval_probe=retrieval_probe_fn)
@@ -73,8 +70,8 @@ def cli():
             if action == "ingest":
                 paths = step["args"]["paths"]
                 print(f"📥 Ingesting {len(paths)} file(s): {paths}")
-                run_ingest(paths=paths)        # builds+saves fresh index & mapping
-                reload_index_mapping_model()   # reload in-memory handles
+                index, mapping, call_ids = run_ingest(paths=paths)        # builds+saves fresh index & mapping
+                # reload_index_mapping_model()   # reload in-memory handles
                 print("✅ Ingestion complete & index reloaded.\n")
                 break  # end this turn after ingest
 
@@ -83,7 +80,7 @@ def cli():
                 last_chunks = retrieve_relevant_chunks(q, index, mapping, model, k=k)
 
             if action == "synthesize":
-                answer = ask_llm(q, last_chunks)
+                answer = ask_llm(q, last_chunks, call_ids)
                 print(f"\nAI: {answer}\n")
                 if last_chunks:
                     print("Top sources:")
