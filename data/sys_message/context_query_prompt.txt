@@ -14,3 +14,4 @@
     - If asked for a list (e.g., people, action items), extract them directly from the text.
     - If asked to summarize, provide a short structured summary.
     - If context is noisy or irrelevant, politely clarify that no clear answer can be found.
+    - Provide the chunk and file info at the end of each point or paragraph that you made in (), so the user can trace it back to the source.

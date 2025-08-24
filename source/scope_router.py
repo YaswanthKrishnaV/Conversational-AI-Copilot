@@ -37,7 +37,7 @@ def extract_topic_llm(query: str) -> Optional[str]:
         return {"scope": "topk_only", "call_id": None, "topic": None, "reason": "Default"}
 
 
-def scope_route(query: str) -> Dict[str, Any]:
+def scope_route(query: str, files: List) -> Dict[str, Any]:
     """
     Ask the LLM to pick a retrieval scope. Returns a dict like:
     {
@@ -50,24 +50,32 @@ def scope_route(query: str) -> Dict[str, Any]:
     """
     client, model_name= get_azure_openai_client()
     
-    system = (
-        "You choose the retrieval scope for a RAG system over SALES CALL TRANSCRIPTS.\n"
-        "Return ONLY JSON with fields: scope, call_id, topic, reason.\n\n"
-        "Scopes:\n"
-        "- topk_only: default for narrow Q&A.\n"
-        "- full_call_of_top_hit: summarize the entire call of the top-1 retrieved chunk.\n"
-        "- last_call: summarize the most recent call.\n"
-        "- call_by_id: summarize a specific call id if user mentions it.\n"
-        "- topic_across_calls: collect all chunks about the user's TOPIC across ALL calls.\n"
-        "- all_calls: aggregate across every call.\n\n"
-        "Rules:\n"
-        "1) If user asks what was discussed/mentioned about a topic ACROSS/ALL calls → topic_across_calls.\n"
-        "2) If 'summarize the last call' → last_call.\n"
-        "3) If 'summarize the full/entire call' (no call specified) → full_call_of_top_hit.\n"
-        "4) If a specific call id is mentioned → call_by_id.\n"
-        "5) Else → topk_only.\n"
-        "6) Only JSON. No prose."
-    )
+    system = f"""You choose the retrieval scope for a RAG system over SALES CALL TRANSCRIPTS.
+List of all files/ call ids - {', '.join(files)}.
+Return ONLY JSON with fields: { "scope", "call_id", "topic", "reason" } and nothing else.
+
+Scopes:
+- "topk_only": default for narrow Q&A.
+- "full_call_of_top_hit": use ALL chunks from the call that contains the top-1 retrieved chunk.
+- "last_call": use ALL chunks from the most recent call.
+- "call_by_id": use ALL chunks from a specific call the user mentions.
+- "topic_across_calls": collect ALL chunks relevant to the user's TOPIC across ALL calls.
+- "all_calls": aggregate across every call (rare).
+
+Rules:
+1) If the user asks what was discussed/mentioned about a TOPIC across/all calls → scope="topic_across_calls".
+   - Extract a concise topic (1-3 words, lowercase) into "topic" (e.g., "pricing", "discounts", "security").
+2) If the user asks to "summarize/recap/highlight key takeaways from the last/latest call" → scope="last_call".
+3) If the user asks to "summarize/recap/highlight the full/entire call" without naming a call → scope="full_call_of_top_hit".
+4) If the user names a call explicitly (e.g., "negotiation call", "demo call", "objection call") or says "call N" asking what was discussed/mentioned about a TOPIC in this call :
+   → scope="call_by_id" and set "call_id" to a normalized identifier.
+   Normalization guidance (use whichever applies):
+     - If a list of known call_ids is provided in context, fuzzy-match the best one (substring match).
+     - Else, derive from the phrase (e.g., "negotiation call" → "negotiation_call").
+     - If "call N" is used, set call_id to the id that ends with N (e.g., "…_call_4" → "…4"), or just "call_4" or "4_.
+5) If none of the above clearly applies → scope="topk_only".
+6) Always include a short "reason" explaining the routing decision.
+7) Output ONLY JSON. No prose, no backticks."""
     user = f"User query: {query}"
 
     try:

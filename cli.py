@@ -12,9 +12,7 @@ from sentence_transformers import SentenceTransformer
 TOP_K = 10 # how many chunks to retrieve per query
 global index, mapping, model, last_chunks
 EMB_MODEL = "all-MiniLM-L6-v2"
-SUMMARY_PAT = re.compile(r"\b(summar(ise|ize)|recap|overview)\b", re.I)
-LAST_CALL_PAT = re.compile(r"\b(last|latest|yesterday)\b", re.I)
-FULL_CALL_PAT = re.compile(r"\b(full|entire|whole)\b", re.I)
+
 # runtime state
 index = None
 mapping = None
@@ -38,34 +36,6 @@ def retrieval_probe_fn(question: str) -> int:
     except Exception:
         return 0
 
-def choose_context_for_summary(query, last_chunks, mapping):
-    q = query.lower()
-
-    # 1) "summarize last call" → pick most recent call_id
-    if SUMMARY_PAT.search(q) and LAST_CALL_PAT.search(q):
-        cid = get_latest_call_id(mapping)
-        return get_chunks_for_call(mapping, cid) if cid else last_chunks
-
-    # 2) "summarize full call" (or "summarize this call"):
-    #     use the call of the top-1 retrieved chunk
-    if SUMMARY_PAT.search(q) and FULL_CALL_PAT.search(q):
-        if last_chunks:
-            cid = last_chunks[0].get("call_id")
-            if cid:
-                return get_chunks_for_call(mapping, cid)
-
-    # 3) plain "summarize <call X>" (optional simple parse)
-    m = re.search(r"\bcall\s*(\d+)\b", q)
-    if SUMMARY_PAT.search(q) and m:
-        want = m.group(1)
-        # try to match stem suffix (e.g., "call3" from "3_demo_call")
-        for meta in mapping.values():
-            cid = meta.get("call_id") or ""
-            if cid.endswith(want):
-                return get_chunks_for_call(mapping, cid)
-
-    # default: keep retrieved chunks
-    return last_chunks
 
 def get_chunks_from_scope(route: Dict[str, Any]) -> List[Dict[str, Any]]:
 
@@ -160,9 +130,7 @@ def cli():
             if action == "ingest":
                 paths = step["args"]["paths"]
                 print(f"📥 Ingesting {len(paths)} file(s): {paths}")
-                index, mapping, call_ids = run_ingest(paths=paths)        # builds+saves fresh index & mapping
-                # reload_index_mapping_model()   # reload in-memory handles
-                print("✅ Ingestion complete & index reloaded.\n")
+                index, mapping, call_ids = run_ingest(paths=paths,append=True)        # builds+saves fresh index & mapping
                 break  # end this turn after ingest
 
             if action == "retrieve":
@@ -172,7 +140,7 @@ def cli():
             if action == "synthesize":
 
                 # 2) ask LLM to pick scope
-                route = scope_route(q)
+                route = scope_route(q, call_ids)
                 
                 context_chunks = get_chunks_from_scope(route)
                 
@@ -180,11 +148,18 @@ def cli():
 
                 print(f"\nAI: {answer}\n")
                 if last_chunks:
-                    print("Top sources:")
-                    for c in context_chunks:
+                    print("\n==================================  Top sources:  =====================================\n")
+                    print("Rank | File | Chunk ID | Time | Speakers | Text")
+                    for c in context_chunks[:5]:
+                        
                         print(f"  [{c['rank']}] {c['file']} #{c['chunk_id']}  {c.get('chunk_start','--:--')}→{c.get('chunk_end','--:--')}  speakers={','.join(c.get('speakers',[]))}")
-                        print(f"\n{c['text'][:100]}{'...' if len(c['text'])>100 else ''}")
-                print("=======================================================END OF QUERY====================================================================\n")
+                        print(f"Text -- {c['text'][:100]}{'...' if len(c['text'])>100 else ''}")
+                    print(".\n.\n.\n.\n.")
+                    for c in context_chunks[-5:]:
+                        print(f"  [{c['rank']}] {c['file']} #{c['chunk_id']}  {c.get('chunk_start','--:--')}→{c.get('chunk_end','--:--')}  speakers={','.join(c.get('speakers',[]))}")
+                        print(f"Text -- {c['text'][:100]}{'...' if len(c['text'])>100 else ''}")
+        
+        print("\n=========================================  ASK YOUR NEXT QUERY  ===================================================\n")
 
 
 if __name__ == "__main__":
