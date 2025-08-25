@@ -1,0 +1,8 @@
+faiss_cpu==1.12.0
+langchain==0.3.27
+numpy==2.3.2
+openai==1.101.0
+pandas==2.3.2
+pytest==8.4.1
+python-dotenv==1.1.1
+sentence_transformers==5.1.0
